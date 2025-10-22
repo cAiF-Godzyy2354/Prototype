@@ -1,0 +1,175 @@
+import tkinter as tk
+from tkinter import scrolledtext
+import socket, json, threading
+import ttkbootstrap as tb
+
+HOST, PORT = "localhost", 9999
+
+class SellerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Seller Portal")
+        self.root.state("zoomed")
+        self.style = tb.Style("flatly")
+        self.dark_mode = False
+
+        # ===== Top Frame: Title + Theme Toggle =====
+        top = tk.Frame(root)
+        top.pack(fill="x", pady=10)
+        tk.Label(top, text="Data Seller Portal", font=("Segoe UI", 22, "bold")).pack(side="left", padx=20)
+        self.theme_button = tb.Button(top, text="Dark Mode", command=self.toggle_theme)
+        self.theme_button.pack(side="right", padx=20)
+
+        # ===== Raw Medical Report =====
+        tb.Label(root, text="Medical Report:").pack(anchor="w", padx=20)
+        self.text_area = scrolledtext.ScrolledText(root, height=10, wrap="word")
+        self.text_area.pack(fill="x", padx=20, pady=5)
+        self.text_area.insert("1.0", self.sample_text())
+
+        # ===== Redaction Checkboxes =====
+        redact_frame = tb.Labelframe(root, text="Redaction Options", padding=10)
+        redact_frame.pack(fill="x", padx=20, pady=5)
+        self.redaction_vars = {f: tk.BooleanVar(value=False) for f in ["Name", "DOB", "SSN", "Gender", "Condition"]}
+        for f in self.redaction_vars:
+            tb.Checkbutton(redact_frame, text=f, variable=self.redaction_vars[f]).pack(side="left", padx=10)
+
+        # ===== Redact Text Button =====
+        tb.Button(root, text="Redact Text", bootstyle="warning", command=self.show_redacted).pack(pady=5)
+
+        # ===== Access Conditions =====
+        cond_frame = tb.Labelframe(root, text="Access Conditions", padding=10)
+        cond_frame.pack(fill="x", padx=20, pady=5)
+        self.conditions = {c: tk.BooleanVar(value=False) for c in ["Doctor", "Researcher", "Public"]}
+        for c in self.conditions:
+            tb.Checkbutton(cond_frame, text=c, variable=self.conditions[c], command=self.update_trust_score).pack(side="left", padx=10)
+
+        # ===== Trust Score =====
+        tb.Label(root, text="Trust Score:").pack()
+        self.trust_canvas = tk.Canvas(root, width=50, height=50)
+        self.trust_canvas.pack(pady=5)
+        self.trust_square = self.trust_canvas.create_rectangle(5,5,45,45, fill="red")
+
+        # ===== Redacted Text Area =====
+        tb.Label(root, text="Redacted Version:").pack(anchor="w", padx=20)
+        self.redacted_area = scrolledtext.ScrolledText(root, height=10, wrap="word")
+        self.redacted_area.pack(fill="x", padx=20, pady=5)
+        self.redacted_area.config(state="disabled")  # Hidden until Redact Text button is clicked
+
+        # ===== Send Button =====
+        self.status_label = tb.Label(root, text="", anchor="center")
+        self.status_label.pack(fill="x", pady=5)
+        tb.Button(root, text="Send Data", bootstyle="success", command=self.send_data).pack(pady=5)
+        tb.Button(root, text="End Transaction", bootstyle="danger-outline", command=self.close).pack(pady=5)
+
+        # ===== Networking =====
+        self.sock = socket.socket()
+        self.sock.bind((HOST, PORT))
+        self.sock.listen(1)
+        self.conn = None
+        threading.Thread(target=self.wait_for_buyer, daemon=True).start()
+        self.match_conditions = {}
+
+    # ---------------- Sample Text ----------------
+    def sample_text(self):
+        return (
+            "Patient Name: John Doe\n"
+            "DOB: 12/25/1980\n"
+            "SSN: 123-45-6789\n"
+            "Gender: Male\n"
+            "Condition: Lung Cancer\n"
+            "Patient presented with chest pain and fatigue. "
+            "Underwent imaging, diagnosed with Stage II Lung Cancer. "
+            "Treatment includes chemotherapy twice weekly."
+        )
+
+    # ---------------- Redacted Text ----------------
+    def redacted_text(self):
+        # Always the same preset redacted paragraph
+        return (
+            "Name: [REDACTED]\n"
+            "DOB: [REDACTED]\n"
+            "SSN: [REDACTED]\n"
+            "Gender: Male\n"
+            "Condition: Lung Cancer\n"
+            "Patient presented with chest pain and fatigue. "
+            "Underwent imaging, diagnosed with Stage II Lung Cancer. "
+            "Treatment includes chemotherapy twice weekly."
+        )
+
+    # ---------------- Show Redacted ----------------
+    def show_redacted(self):
+        self.redacted_area.config(state="normal")
+        self.redacted_area.delete("1.0", "end")
+        self.redacted_area.insert("1.0", self.redacted_text())
+        self.redacted_area.config(state="disabled")
+
+    # ---------------- Trust Score ----------------
+    def update_trust_score(self):
+        if not self.match_conditions:
+            self.trust_canvas.itemconfig(self.trust_square, fill="red")
+            return
+        seller = {k: v.get() for k, v in self.conditions.items()}
+        match = seller == self.match_conditions
+        color = "green" if match else "red"
+        self.trust_canvas.itemconfig(self.trust_square, fill=color)
+
+    # ---------------- Networking ----------------
+    def wait_for_buyer(self):
+        self.conn, _ = self.sock.accept()
+        threading.Thread(target=self.listen_buyer, daemon=True).start()
+
+    def listen_buyer(self):
+        while True:
+            try:
+                data = self.conn.recv(4096).decode()
+                if not data:
+                    break
+                msg = json.loads(data)
+                if msg["type"] == "conditions":
+                    self.match_conditions = msg["data"]
+                    self.update_trust_score()
+                    seller = {k: v.get() for k, v in self.conditions.items()}
+                    match = seller == self.match_conditions
+                    self.conn.sendall(json.dumps({"type":"match","match":match}).encode())
+            except:
+                break
+
+    # ---------------- Send Data ----------------
+    def send_data(self):
+        if not self.conn:
+            self.status_label.config(text="No buyer connected", bootstyle="warning")
+            return
+        seller = {k: v.get() for k, v in self.conditions.items()}
+        match = seller == self.match_conditions
+        if match:
+            data = self.redacted_area.get("1.0","end").strip()
+            self.conn.sendall(json.dumps({"type":"data","data":data}).encode())
+            self.status_label.config(text="Data transferred successfully", bootstyle="success")
+        else:
+            self.status_label.config(text="Conditions do not match", bootstyle="danger")
+
+    # ---------------- Theme Toggle ----------------
+    def toggle_theme(self):
+        if self.dark_mode:
+            self.style.theme_use("flatly")
+            self.theme_button.config(text="Dark Mode")
+            self.dark_mode = False
+        else:
+            self.style.theme_use("darkly")
+            self.theme_button.config(text="Light Mode")
+            self.dark_mode = True
+
+    # ---------------- Close ----------------
+    def close(self):
+        try:
+            if self.conn: self.conn.close()
+            self.sock.close()
+        except:
+            pass
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tb.Window(themename="flatly")
+    app = SellerApp(root)
+    root.mainloop()

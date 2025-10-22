@@ -1,0 +1,107 @@
+import tkinter as tk
+from tkinter import scrolledtext
+import socket, json, threading
+import ttkbootstrap as tb
+
+HOST, PORT = "localhost", 9999
+
+class BuyerApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Buyer Portal")
+        self.root.state("zoomed")
+        self.style = tb.Style("flatly")
+        self.dark_mode = False
+
+        # ===== Top Frame: Title + Theme Toggle =====
+        top = tk.Frame(root)
+        top.pack(fill="x", pady=10)
+        tk.Label(top, text="Data Buyer Portal", font=("Segoe UI", 22, "bold")).pack(side="left", padx=20)
+        self.theme_button = tb.Button(top, text="Dark Mode", command=self.toggle_theme)
+        self.theme_button.pack(side="right", padx=20)
+
+        # ===== Access Conditions =====
+        cond_frame = tb.Labelframe(root, text="Your Access Conditions", padding=10)
+        cond_frame.pack(fill="x", padx=20, pady=5)
+        self.conditions = {c: tk.BooleanVar(value=False) for c in ["Doctor", "Researcher", "Public"]}
+        for c in self.conditions:
+            tb.Checkbutton(cond_frame, text=c, variable=self.conditions[c], command=self.send_conditions).pack(side="left", padx=10)
+
+        # ===== Trust Score =====
+        tb.Label(root, text="Trust Score:").pack()
+        self.trust_canvas = tk.Canvas(root, width=50, height=50)
+        self.trust_canvas.pack(pady=5)
+        self.trust_square = self.trust_canvas.create_rectangle(5,5,45,45, fill="red")
+
+        # ===== Redacted Data Display =====
+        tb.Label(root, text="Redacted Version:").pack(anchor="w", padx=20)
+        self.text_area = scrolledtext.ScrolledText(root, height=15, wrap="word")
+        self.text_area.pack(fill="x", padx=20, pady=5)
+
+        # ===== Status Label =====
+        self.status_label = tb.Label(root, text="Waiting for Seller...", anchor="center")
+        self.status_label.pack(fill="x", pady=5)
+        tb.Button(root, text="End Transaction", bootstyle="danger-outline", command=self.close).pack(pady=5)
+
+        # ===== Networking =====
+        self.sock = socket.socket()
+        connected = False
+        while not connected:
+            try:
+                self.sock.connect((HOST, PORT))
+                connected = True
+            except:
+                pass
+
+        threading.Thread(target=self.listen_seller, daemon=True).start()
+        self.match_conditions = {}
+
+    # ---------------- Send Buyer's Conditions ----------------
+    def send_conditions(self):
+        msg = {"type":"conditions", "data":{k:v.get() for k,v in self.conditions.items()}}
+        self.sock.sendall(json.dumps(msg).encode())
+
+    # ---------------- Listen to Seller ----------------
+    def listen_seller(self):
+        while True:
+            try:
+                data = self.sock.recv(4096).decode()
+                if not data:
+                    break
+                msg = json.loads(data)
+                if msg["type"] == "match":
+                    match = msg["match"]
+                    color = "green" if match else "red"
+                    self.trust_canvas.itemconfig(self.trust_square, fill=color)
+                    self.status_label.config(text="Conditions Match ✅" if match else "Conditions Do Not Match ❌")
+                elif msg["type"] == "data":
+                    # Display the redacted text received from seller
+                    self.text_area.delete("1.0", "end")
+                    self.text_area.insert("1.0", msg["data"])
+            except:
+                break
+
+    # ---------------- Theme Toggle ----------------
+    def toggle_theme(self):
+        if self.dark_mode:
+            self.style.theme_use("flatly")
+            self.theme_button.config(text="Dark Mode")
+            self.dark_mode = False
+        else:
+            self.style.theme_use("darkly")
+            self.theme_button.config(text="Light Mode")
+            self.dark_mode = True
+
+    # ---------------- Close ----------------
+    def close(self):
+        try:
+            self.sock.close()
+        except:
+            pass
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    root = tb.Window(themename="flatly")
+    app = BuyerApp(root)
+    root.mainloop()
